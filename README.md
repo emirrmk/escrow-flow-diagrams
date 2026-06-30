@@ -8,15 +8,42 @@ This document outlines the architecture and the 4 main operational flows of the 
 
 To support fine-grained financial logic and deterministic escrow states, the token attributes of the ERC-3525 standard are mapped as follows:
 
-1. **ERC-3525 Slot (`uint256`):** Represents the unique service configuration, mapped as `serviceId(type, startDate, endDate, defaultDate)`. These parameters are packed or hashed (e.g., via `keccak256`) into a single `uint256` slot to classify tokens sharing the same business rule structure.
-   - **Service Token Slot:** `Slot 1` — Represents the provider's collateral parameters.
-   - **Obligation Token Slot:** `Slot 2` — Represents the client's payment obligation parameters.
+### 1. ERC-3525 Slot (`uint256`) Structures
 
-2. **ERC-3525 Token ID (`uint256`):** Represents the identity/credentials of the token owner. Since the ERC-3525 `tokenId` is a `uint256` value, it stores the **Owner's Public Key** (or its Ethereum address derivation, which fits comfortably within the 256-bit unsigned integer limits).
+Slots classify tokens sharing the same business rule structure. In ERC-3525, tokens with the same slot are compatible for value transfers (`transferValue`), allowing splitting and merging of values.
 
-3. **ERC-3525 Value:** Directly represents the exact locked **RLUSD (Ripple USD)** amount. Financial operations like value transfer (`transferValue`) or value burning (`burnValue`) trigger the underlying ERC-20 RLUSD transfers between client/provider wallets and the escrow pool.
+#### A. Service Token Slot: `serviceId(type, startDate, endDate, defaultDate)`
+Represents the provider's collateral parameters. Packed or hashed into a `uint256` value:
+- **`type`** (e.g., `uint8`): The category/class of the service.
+- **`startDate`** & **`endDate`** (e.g., `uint32`): The active duration of the service contract.
+- **`defaultDate`** (e.g., `uint32`): The grace period or resolution deadline in case of delivery defaults.
 
-4. **Gated Off-Chain Orchestration:** Direct wallet-to-wallet transfers via standard ERC-3525 methods are blocked. All business logic rules (vesting schedules, matching, market fragmentation) are computed off-chain, and validated state updates are pushed to the chain using the **Centralized Algorithm (signed by the Admin Key)**.
+#### B. Obligation Token Slot: `obligationId(serviceSlot, milestoneConfig, paymentType, penaltyRate)`
+Represents the client's payment obligation and escrow rules. Packed or hashed into a `uint256` value:
+- **`serviceSlot`** (e.g., `uint128`): Directly references the `serviceId` of the matching Service Token. This ensures that the payment obligation is cryptographically/deterministially tied to a specific service structure.
+- **`milestoneConfig`** (e.g., `uint64`): Encodes milestone counts, interval durations, or vesting epoch configurations (e.g., 4 equal monthly hakediş releases).
+- **`paymentType`** (e.g., `uint8`): Defines the release logic (e.g., `0` for Time-Fragmented / Vesting, `1` for Oracle-Triggered, `2` for Hybrid).
+- **`penaltyRate`** (e.g., `uint56`): Specifies the slashing multiplier (e.g., percentage of provider collateral to be forfeited to the client in case of SLA breach).
+
+---
+
+### 2. ERC-3525 Token ID (`uint256`)
+
+Represents the identity of the token owner. Since the ERC-3525 `tokenId` is a `uint256` value, it stores the **Owner's Public Key** (or its Ethereum address derivation, which fits comfortably within the 256-bit unsigned integer limits).
+- **Service Token ID:** `ProviderPubKey`
+- **Obligation Token ID:** `ProviderPubKey` (When representing the right to receive payment) or `ClientPubKey` (Depending on custody/escrow claims, or transferred to the provider upon duty delegation/claim initialization).
+
+---
+
+### 3. ERC-3525 Value
+
+Directly represents the exact locked **RLUSD (Ripple USD)** amount. Financial operations like value transfer (`transferValue`) or value burning (`burnValue`) trigger the underlying ERC-20 RLUSD transfers between client/provider wallets and the escrow pool.
+
+---
+
+### 4. Gated Off-Chain Orchestration
+
+Direct wallet-to-wallet transfers via standard ERC-3525 methods are blocked. All business logic rules (vesting schedules, matching, market fragmentation) are computed off-chain, and validated state updates are pushed to the chain using the **Centralized Algorithm (signed by the Admin Key)**.
 
 ---
 
@@ -47,8 +74,8 @@ graph TD
         D -- "1. Pull X RLUSD (Client)" --> Pool
         D -- "2. Pull Y RLUSD (Provider)" --> Pool
         
-        D -- "3. Mint (Slot=2, ID=ClientPubKey, Value=X)" --> OT["Obligation Token <br> Escrow Payment Tracking"]:::tokenNode
-        D -- "4. Mint (Slot=1, ID=ProviderPubKey, Value=Y)" --> ST["Service Token <br> Provider Collateral"]:::tokenNode
+        D -- "3. Mint (Slot=obligationId, ID=ClientPubKey, Value=X)" --> OT["Obligation Token <br> Escrow Payment Tracking"]:::tokenNode
+        D -- "4. Mint (Slot=serviceId, ID=ProviderPubKey, Value=Y)" --> ST["Service Token <br> Provider Collateral"]:::tokenNode
     end
 ```
 
@@ -74,7 +101,7 @@ graph TD
     subgraph OnChain ["⛓️ ON-CHAIN (Ripple EVM Sidechain)"]
         C --> D{"Escrow Contract <br> releaseMilestone"}:::onChainNode
         
-        D --> OT["Obligation Token <br> Slot 2"]:::tokenNode
+        D --> OT["Obligation Token <br> Slot=obligationId"]:::tokenNode
         OT -- "1. Deduct Value <br> (burnValue)" --> OT
         
         D --> Pool[("RLUSD Vault")]:::databaseNode
@@ -105,7 +132,7 @@ graph TD
         Alg --> TransferCall{"Escrow Contract <br> transferProviderDuties"}:::onChainNode
         
         subgraph Branch1 ["Obligation Token Update"]
-            TransferCall -- "1. Transfer Ownership" --> OT["Obligation Token <br> Slot 2"]:::tokenNode
+            TransferCall -- "1. Transfer Ownership" --> OT["Obligation Token <br> Slot=obligationId"]:::tokenNode
             OT --> NewProv["New Provider Wallet <br> (NewProviderPubKey)"]:::onChainNode
         end
 
@@ -115,7 +142,7 @@ graph TD
             OldST -- "3. Burn Token" --> BurnX[X]:::offChainNode
             
             NewProv -- "4. Lock Collateral (RLUSD)" --> Pool[("RLUSD Vault")]:::databaseNode
-            Pool -- "5. Mint New Service Token" --> NewST["New Service Token <br> Slot 1"]:::tokenNode
+            Pool -- "5. Mint New Service Token" --> NewST["New Service Token <br> Slot=serviceId"]:::tokenNode
         end
     end
 ```
@@ -147,8 +174,8 @@ graph TD
         end
 
         subgraph TokenState ["Token States"]
-            ST["Service Token <br> Slot 1"]:::tokenNode
-            OT["Obligation Token <br> Slot 2"]:::tokenNode
+            ST["Service Token <br> Slot=serviceId"]:::tokenNode
+            OT["Obligation Token <br> Slot=obligationId"]:::tokenNode
         end
 
         SlashCall --> ST
