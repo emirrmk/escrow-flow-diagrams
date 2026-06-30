@@ -1,11 +1,14 @@
 # Gözetimli On-Chain Muhasebe ve Escrow Katmanı Akış Diyagramları (Revize)
 
-Bu doküman, kullanıcı geri bildirimleri doğrultusunda güncellenmiş akış diyagramlarını içermektedir.
+Bu doküman, sistemin **gözetimli (custodial/governed) bir on-chain muhasebe ve escrow katmanına** dönüşümünü temel alan 4 ana senaryonun akış diyagramlarını ve mimari detaylarını içerir.
 
-Yapılan güncellemeler:
-1. **İş Başlangıcı:** Manuel admin onayı kaldırıldı. Eşleşme sağlandığında kullanıcıların kripto cüzdan imzaları ile doğrudan escrow kilitlemesi ve token basımı (mint) tetiklenir.
-2. **Merkezi Algoritma:** On-chain tetiklemeler için "Admin" ifadesi yerine, işlemleri admin imzasıyla otomatik yürüten **"Merkezi Algoritma (Admin İmzası ile)"** tanımı kullanıldı.
-3. **Sağlayıcı Devri (Transfer):** Devir işlemi müşteri tarafından değil, **Hizmet Sağlayıcı** tarafından başlatılır. **Müşterinin de imzası alınarak**, eski sağlayıcının Service Token'ı yakılıp teminatı iade edilir, yeni sağlayıcı adına yeni Service Token basılır ve hak edilecek tutarı temsil eden Obligation Token yeni sağlayıcıya transfer edilir.
+## Mimari Altyapı ve Teknolojiler
+
+- **ERC-3525 Semi-Fungible Token Standardı:** Tokenlar ERC-3525 standart transfer fonksiyonlarına kapatılmıştır. Akıllı sözleşme katmanında `Slot` ve `Value` kavramları doğrudan finansal eşleşmeyi ve sahiplik durumunu temsil eder. 
+  - **Service Token (`Slot 1`):** Sağlayıcının bu spesifik iş için ceza teminatı olarak kilitlediği **kesin RLUSD miktarı**.
+  - **Obligation Token (`Slot 2`):** Müşterinin bu spesifik iş için hizmet bedeli olarak kilitlediği **kesin RLUSD miktarı**.
+- **Ripple EVM Sidechain:** Sözleşmelerin konuşlandırıldığı ve çalıştığı ana blockchain altyapısıdır. Ripple EVM Sidechain; yüksek işlem hızı, düşük maliyet, EVM uyumluluğu ve kurumsal düzeyde RLUSD (Ripple USD) güvencesi sağlayarak deterministik escrow motorunu destekler.
+- **Gated Off-Chain Mantığı:** Standart cüzdandan cüzdana doğrudan ERC-3525 transferleri kısıtlanmıştır. İş kuralları off-chain sistem üzerinde yürütülür ve onaylanan kararlar admin anahtarı kullanan merkezi algoritma tarafından zincire yansıtılır.
 
 ---
 
@@ -27,7 +30,7 @@ graph TD
         B --> C["İşlem Verisinin Zincire İletilmesi"]:::offChainNode
     end
 
-    subgraph OnChain ["⛓️ ON-CHAIN (Escrow & Token Motoru)"]
+    subgraph OnChain ["⛓️ ON-CHAIN (Ripple EVM Sidechain & Escrow)"]
         C --> D{Escrow Kontratı <br> atomicMintAndLock}:::onChainNode
         
         subgraph Vault ["Escrow Havuzu"]
@@ -61,7 +64,7 @@ graph TD
         B --> C["Merkezi Algoritma <br> (Admin İmzası ile Tetikleme)"]:::offChainNode
     end
 
-    subgraph OnChain ["⛓️ ON-CHAIN (Değer Transferi)"]
+    subgraph OnChain ["⛓️ ON-CHAIN (Ripple EVM Sidechain)"]
         C --> D{"Escrow Kontratı <br> releaseMilestone"}:::onChainNode
         
         D --> OT["Obligation Token <br> Slot 2"]:::tokenNode
@@ -91,7 +94,7 @@ graph TD
         CustSign --> Alg["Merkezi Algoritma <br> Admin İmzası ile Tetikleme"]:::offChainNode
     end
 
-    subgraph OnChain ["⛓️ ON-CHAIN (Teminat & Hak Devri)"]
+    subgraph OnChain ["⛓️ ON-CHAIN (Ripple EVM Sidechain)"]
         Alg --> TransferCall{"Escrow Kontratı <br> transferProviderDuties"}:::onChainNode
         
         subgraph Branch1 ["Obligation Token Transferi"]
@@ -129,7 +132,7 @@ graph TD
         Decision --> AlgTrig["Merkezi Algoritma <br> (Admin İmzası ile Tetikleme)"]:::offChainNode
     end
 
-    subgraph OnChain ["⛓️ ON-CHAIN (Cezalandırma & İade)"]
+    subgraph OnChain ["⛓️ ON-CHAIN (Ripple EVM Sidechain)"]
         AlgTrig --> SlashCall{"Escrow Kontratı <br> slashProvider"}:::onChainNode
         
         subgraph VaultState ["Escrow Havuzu"]
