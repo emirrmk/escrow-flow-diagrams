@@ -1,55 +1,62 @@
-# Gözetimli On-Chain Muhasebe ve Escrow Katmanı Akış Diyagramları (Revize)
+# Governed On-Chain Accounting and Escrow Layer Flow Diagrams
 
-Bu doküman, sistemin **gözetimli (custodial/governed) bir on-chain muhasebe ve escrow katmanına** dönüşümünü temel alan 4 ana senaryonun akış diyagramlarını ve mimari detaylarını içerir.
-
-## Mimari Altyapı ve Teknolojiler
-
-- **ERC-3525 Semi-Fungible Token Standardı:** Tokenlar ERC-3525 standart transfer fonksiyonlarına kapatılmıştır. Akıllı sözleşme katmanında `Slot` ve `Value` kavramları doğrudan finansal eşleşmeyi ve sahiplik durumunu temsil eder. 
-  - **Service Token (`Slot 1`):** Sağlayıcının bu spesifik iş için ceza teminatı olarak kilitlediği **kesin RLUSD miktarı**.
-  - **Obligation Token (`Slot 2`):** Müşterinin bu spesifik iş için hizmet bedeli olarak kilitlediği **kesin RLUSD miktarı**.
-- **Ripple EVM Sidechain:** Sözleşmelerin konuşlandırıldığı ve çalıştığı ana blockchain altyapısıdır. Ripple EVM Sidechain; yüksek işlem hızı, düşük maliyet, EVM uyumluluğu ve kurumsal düzeyde RLUSD (Ripple USD) güvencesi sağlayarak deterministik escrow motorunu destekler.
-- **Gated Off-Chain Mantığı:** Standart cüzdandan cüzdana doğrudan ERC-3525 transferleri kısıtlanmıştır. İş kuralları off-chain sistem üzerinde yürütülür ve onaylanan kararlar admin anahtarı kullanan merkezi algoritma tarafından zincire yansıtılır.
+This document outlines the architecture and the 4 main operational flows of the **governed (custodial/governed) on-chain accounting and escrow layer** implemented on the **Ripple EVM Sidechain** using the **ERC-3525 Semi-Fungible Token** standard.
 
 ---
 
-## 1. İş Başlangıcı (Atomic Mint & Lock)
+## Architectural Specifications & Token Design
 
-Eşleşme sağlandığında admin onayına gerek kalmaksızın, Müşteri ve Sağlayıcının kripto cüzdanlarıyla attığı imzalar doğrudan akıllı sözleşme üzerindeki kilitleme ve token basım sürecini başlatır.
+To support fine-grained financial logic and deterministic escrow states, the token attributes of the ERC-3525 standard are mapped as follows:
+
+1. **ERC-3525 Slot (`uint256`):** Represents the unique service configuration, mapped as `serviceId(type, startDate, endDate, defaultDate)`. These parameters are packed or hashed (e.g., via `keccak256`) into a single `uint256` slot to classify tokens sharing the same business rule structure.
+   - **Service Token Slot:** `Slot 1` — Represents the provider's collateral parameters.
+   - **Obligation Token Slot:** `Slot 2` — Represents the client's payment obligation parameters.
+
+2. **ERC-3525 Token ID (`uint256`):** Represents the identity/credentials of the token owner. Since the ERC-3525 `tokenId` is a `uint256` value, it stores the **Owner's Public Key** (or its Ethereum address derivation, which fits comfortably within the 256-bit unsigned integer limits).
+
+3. **ERC-3525 Value:** Directly represents the exact locked **RLUSD (Ripple USD)** amount. Financial operations like value transfer (`transferValue`) or value burning (`burnValue`) trigger the underlying ERC-20 RLUSD transfers between client/provider wallets and the escrow pool.
+
+4. **Gated Off-Chain Orchestration:** Direct wallet-to-wallet transfers via standard ERC-3525 methods are blocked. All business logic rules (vesting schedules, matching, market fragmentation) are computed off-chain, and validated state updates are pushed to the chain using the **Centralized Algorithm (signed by the Admin Key)**.
+
+---
+
+## 1. Job Initialization (Atomic Mint & Lock)
+
+When a match is established off-chain, the Client and the Provider sign the transaction/allowance with their crypto wallets. The escrow contract executes the atomic lock of RLUSD and mints the corresponding ERC-3525 tokens. No manual admin approval is required.
 
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': { 'primaryColor': '#f9fafb', 'edgeLabelBackground':'#ffffff', 'clusterBkg':'#f3f4f6', 'clusterBorder':'#d1d5db'}}}%%
 graph TD
-    %% Sınıf Tanımları
     classDef offChainNode fill:#ffffff,stroke:#4b5563,stroke-width:2px,stroke-dasharray: 5 5;
     classDef onChainNode fill:#eff6ff,stroke:#3b82f6,stroke-width:2px;
     classDef tokenNode fill:#ecfdf5,stroke:#10b981,stroke-width:2px;
     classDef databaseNode fill:#faf5ff,stroke:#8b5cf6,stroke-width:2px;
 
-    subgraph OffChain ["🌐 OFF-CHAIN (Eşleşme & Cüzdan İmzaları)"]
-        A["Müşteri & Sağlayıcı Eşleşmesi"]:::offChainNode --> B["Müşteri & Sağlayıcı Cüzdan İmzaları <br> (RLUSD Harcama & İşlem Onayı)"]:::offChainNode
-        B --> C["İşlem Verisinin Zincire İletilmesi"]:::offChainNode
+    subgraph OffChain ["🌐 OFF-CHAIN (Matching & Wallet Signatures)"]
+        A["Client & Provider Match"]:::offChainNode --> B["Wallet Signatures <br> (RLUSD Allowance & Transaction Approval)"]:::offChainNode
+        B --> C["Relay Transaction to Blockchain"]:::offChainNode
     end
 
     subgraph OnChain ["⛓️ ON-CHAIN (Ripple EVM Sidechain & Escrow)"]
-        C --> D{Escrow Kontratı <br> atomicMintAndLock}:::onChainNode
+        C --> D{"Escrow Contract <br> atomicMintAndLock"}:::onChainNode
         
-        subgraph Vault ["Escrow Havuzu"]
+        subgraph Vault ["Escrow Vault"]
             Pool[("RLUSD Vault")]:::databaseNode
         end
         
-        D -- "1. X RLUSD Çek (Müşteri)" --> Pool
-        D -- "2. Y RLUSD Çek (Sağlayıcı)" --> Pool
+        D -- "1. Pull X RLUSD (Client)" --> Pool
+        D -- "2. Pull Y RLUSD (Provider)" --> Pool
         
-        D -- "3. Mint (Slot 2, Value=X)" --> OT["Obligation Token <br> Sağlayıcıya Hak Ediş Göstergesi"]:::tokenNode
-        D -- "4. Mint (Slot 1, Value=Y)" --> ST["Service Token <br> Sağlayıcı Cüzdanı"]:::tokenNode
+        D -- "3. Mint (Slot=2, ID=ClientPubKey, Value=X)" --> OT["Obligation Token <br> Escrow Payment Tracking"]:::tokenNode
+        D -- "4. Mint (Slot=1, ID=ProviderPubKey, Value=Y)" --> ST["Service Token <br> Provider Collateral"]:::tokenNode
     end
 ```
 
 ---
 
-## 2. Time Fragmented Tüketim (Hakediş)
+## 2. Time-Fragmented Consumption (Milestone Release)
 
-Belirlenen zaman dilimleri dolduğunda ve oracle doğrulaması yapıldığında, merkezi algoritma admin imzasıyla hakediş fonksiyonunu tetikler.
+As milestones/vesting periods elapse and off-chain oracle verifications are submitted, the Centralized Algorithm (with Admin signature) triggers the release function. The value in the Obligation Token is reduced and paid to the provider.
 
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': { 'primaryColor': '#f9fafb', 'edgeLabelBackground':'#ffffff', 'clusterBkg':'#f3f4f6', 'clusterBorder':'#d1d5db'}}}%%
@@ -59,27 +66,27 @@ graph TD
     classDef tokenNode fill:#ecfdf5,stroke:#10b981,stroke-width:2px;
     classDef databaseNode fill:#faf5ff,stroke:#8b5cf6,stroke-width:2px;
 
-    subgraph OffChain ["🌐 OFF-CHAIN (Doğrulama & Tetikleme)"]
-        A["Hakediş Dönemi Sonu"]:::offChainNode --> B["Oracle / İş Teslim Doğrulaması"]:::offChainNode
-        B --> C["Merkezi Algoritma <br> (Admin İmzası ile Tetikleme)"]:::offChainNode
+    subgraph OffChain ["🌐 OFF-CHAIN (Verification & Trigger)"]
+        A["Vesting Milestone Reached"]:::offChainNode --> B["Oracle / Work Delivery Verification"]:::offChainNode
+        B --> C["Centralized Algorithm <br> (Trigger with Admin Signature)"]:::offChainNode
     end
 
     subgraph OnChain ["⛓️ ON-CHAIN (Ripple EVM Sidechain)"]
-        C --> D{"Escrow Kontratı <br> releaseMilestone"}:::onChainNode
+        C --> D{"Escrow Contract <br> releaseMilestone"}:::onChainNode
         
         D --> OT["Obligation Token <br> Slot 2"]:::tokenNode
-        OT -- "1. Değer Düşürülür <br> burnValue" --> OT
+        OT -- "1. Deduct Value <br> (burnValue)" --> OT
         
         D --> Pool[("RLUSD Vault")]:::databaseNode
-        Pool -- "2. Hakedilen RLUSD'yi Gönder" --> Prov["Sağlayıcı Cüzdanı"]:::onChainNode
+        Pool -- "2. Transfer Released RLUSD" --> Prov["Provider Wallet <br> (ProviderPubKey)"]:::onChainNode
     end
 ```
 
 ---
 
-## 3. Market/Time Fragmented Devir (Transfer)
+## 3. Market/Time-Fragmented Duty Delegation (Transfer / Replacement)
 
-Hizmet sağlayıcı iş bitmeden devir yapmak istediğinde, **Müşteri'nin de imzasıyla** devir süreci başlatılır. Eski sağlayıcının teminatı iade edilirken, yeni sağlayıcıdan teminat alınarak yeni Service Token basılır ve Obligation Token yeni sağlayıcıya transfer edilir.
+When a service provider delegates/transfers their duties to a new provider, the **Client's signature is required**. The Centralized Algorithm updates the escrow state: the old provider's Service Token is burned and collateral returned, a new Service Token is minted for the new provider, and the Obligation Token is transferred to the new provider.
 
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': { 'primaryColor': '#f9fafb', 'edgeLabelBackground':'#ffffff', 'clusterBkg':'#f3f4f6', 'clusterBorder':'#d1d5db'}}}%%
@@ -89,35 +96,35 @@ graph TD
     classDef tokenNode fill:#ecfdf5,stroke:#10b981,stroke-width:2px;
     classDef databaseNode fill:#faf5ff,stroke:#8b5cf6,stroke-width:2px;
 
-    subgraph OffChain ["🌐 OFF-CHAIN (Sağlayıcı Devir Talebi & Onay)"]
-        Req["Sağlayıcı Devir Talebi"]:::offChainNode --> CustSign["Müşteri Onay İmzası"]:::offChainNode
-        CustSign --> Alg["Merkezi Algoritma <br> Admin İmzası ile Tetikleme"]:::offChainNode
+    subgraph OffChain ["🌐 OFF-CHAIN (Delegation Request & Approval)"]
+        Req["Provider Delegation Request"]:::offChainNode --> CustSign["Client Consent Signature"]:::offChainNode
+        CustSign --> Alg["Centralized Algorithm <br> (Trigger with Admin Signature)"]:::offChainNode
     end
 
     subgraph OnChain ["⛓️ ON-CHAIN (Ripple EVM Sidechain)"]
-        Alg --> TransferCall{"Escrow Kontratı <br> transferProviderDuties"}:::onChainNode
+        Alg --> TransferCall{"Escrow Contract <br> transferProviderDuties"}:::onChainNode
         
-        subgraph Branch1 ["Obligation Token Transferi"]
-            TransferCall -- "1. Transfer" --> OT["Obligation Token <br> Slot 2"]:::tokenNode
-            OT --> NewProv["Yeni Sağlayıcı Cüzdanı"]:::onChainNode
+        subgraph Branch1 ["Obligation Token Update"]
+            TransferCall -- "1. Transfer Ownership" --> OT["Obligation Token <br> Slot 2"]:::tokenNode
+            OT --> NewProv["New Provider Wallet <br> (NewProviderPubKey)"]:::onChainNode
         end
 
-        subgraph Branch2 ["Sağlayıcı Teminat Güncellemesi"]
-            TransferCall -- "2. Eski Teminatı İade Et" --> OldST["Eski Service Token"]:::tokenNode
-            OldST --> OldProv["Eski Sağlayıcı Cüzdanı"]:::onChainNode
-            OldST -- "3. Tokenı Yak (Burn)" --> BurnX[X]:::offChainNode
+        subgraph Branch2 ["Service Collateral Swap"]
+            TransferCall -- "2. Refund Remaining Collateral" --> OldST["Old Service Token"]:::tokenNode
+            OldST --> OldProv["Old Provider Wallet <br> (OldProviderPubKey)"]:::onChainNode
+            OldST -- "3. Burn Token" --> BurnX[X]:::offChainNode
             
-            NewProv -- "4. Yeni Teminat (RLUSD)" --> Pool[("RLUSD Vault")]:::databaseNode
-            Pool -- "5. Yeni Service Token Bas" --> NewST["Yeni Service Token <br> Slot 1"]:::tokenNode
+            NewProv -- "4. Lock Collateral (RLUSD)" --> Pool[("RLUSD Vault")]:::databaseNode
+            Pool -- "5. Mint New Service Token" --> NewST["New Service Token <br> Slot 1"]:::tokenNode
         end
     end
 ```
 
 ---
 
-## 4. Slashing (Ceza)
+## 4. Slashing (Collateral Forfeiture)
 
-Sağlayıcı taahhüdünü ihlal ettiğinde, merkezi algoritma admin imzasıyla slashing fonksiyonunu çağırarak sağlayıcının teminatını müşteriye aktarır ve müşterinin kalan parasını iade eder.
+If the provider violates their service commitments, the off-chain system detects the breach. The Centralized Algorithm (with Admin signature) triggers the slash function: the Provider's Service Token is burned and their locked collateral is sent to the Client. The Client's remaining unspent balance in the Obligation Token is refunded.
 
 ```mermaid
 %%{init: {'theme': 'neutral', 'themeVariables': { 'primaryColor': '#f9fafb', 'edgeLabelBackground':'#ffffff', 'clusterBkg':'#f3f4f6', 'clusterBorder':'#d1d5db'}}}%%
@@ -127,19 +134,19 @@ graph TD
     classDef tokenNode fill:#ecfdf5,stroke:#10b981,stroke-width:2px;
     classDef databaseNode fill:#faf5ff,stroke:#8b5cf6,stroke-width:2px;
 
-    subgraph OffChain ["🌐 OFF-CHAIN (İhlal Tespiti)"]
-        Breach["Sağlayıcı Taahhüt İhlali"]:::offChainNode --> Decision["Backend Slashing Kararı"]:::offChainNode
-        Decision --> AlgTrig["Merkezi Algoritma <br> (Admin İmzası ile Tetikleme)"]:::offChainNode
+    subgraph OffChain ["🌐 OFF-CHAIN (Breach Detection)"]
+        Breach["Provider Commitment Breach"]:::offChainNode --> Decision["Backend Slashing Decision"]:::offChainNode
+        Decision --> AlgTrig["Centralized Algorithm <br> (Trigger with Admin Signature)"]:::offChainNode
     end
 
     subgraph OnChain ["⛓️ ON-CHAIN (Ripple EVM Sidechain)"]
-        AlgTrig --> SlashCall{"Escrow Kontratı <br> slashProvider"}:::onChainNode
+        AlgTrig --> SlashCall{"Escrow Contract <br> slashProvider"}:::onChainNode
         
-        subgraph VaultState ["Escrow Havuzu"]
+        subgraph VaultState ["Escrow Vault"]
             Pool[("RLUSD Vault")]:::databaseNode
         end
 
-        subgraph TokenState ["Token Durumları"]
+        subgraph TokenState ["Token States"]
             ST["Service Token <br> Slot 1"]:::tokenNode
             OT["Obligation Token <br> Slot 2"]:::tokenNode
         end
@@ -147,12 +154,12 @@ graph TD
         SlashCall --> ST
         SlashCall --> OT
 
-        %% Sağlayıcı Teminatı Tazminatı
-        ST -- "1. Yak (Burn)" --> BurnST[X]:::offChainNode
-        Pool -- "2. Sağlayıcı Teminatını (Y) Tazminat Olarak Gönder" --> Cust["Müşteri Cüzdanı"]:::onChainNode
+        %% Provider Collateral Compensation
+        ST -- "1. Burn Token" --> BurnST[X]:::offChainNode
+        Pool -- "2. Send Provider Collateral (Y) to Client" --> Cust["Client Wallet <br> (ClientPubKey)"]:::onChainNode
 
-        %% Müşteri Bakiyesi İadesi
-        OT -- "3. Yak (Burn)" --> BurnOT[X]:::offChainNode
-        Pool -- "4. Harcanmamış Bakiyeyi (X_kalan) İade Et" --> Cust
+        %% Client Escrow Refund
+        OT -- "3. Burn Token" --> BurnOT[X]:::offChainNode
+        Pool -- "4. Refund Unspent Balance (X_remaining) to Client" --> Cust
     end
 ```
